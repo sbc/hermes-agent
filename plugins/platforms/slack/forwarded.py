@@ -34,6 +34,13 @@ def _message_sources(attachment: Mapping[str, Any]) -> Iterable[Mapping[str, Any
             nested = _as_mapping(source.get(key))
             if nested is not None:
                 pending.append(nested)
+        # Slack's message_blocks entries wrap the original message, rather than
+        # being Block Kit blocks themselves (ConversationsHistoryResponse).
+        for entry in source.get("message_blocks") or []:
+            if isinstance(entry, Mapping):
+                nested = _as_mapping(entry.get("message"))
+                if nested is not None:
+                    pending.append(nested)
 
 
 def is_message_unfurl_attachment(attachment: Any) -> bool:
@@ -54,7 +61,7 @@ def forwarded_author_id(attachment: Any) -> str:
     if mapping is None:
         return ""
     for source in _message_sources(mapping):
-        value = source.get("author_id")
+        value = source.get("author_id") or source.get("user")
         if value:
             return str(value)
     return ""
@@ -184,7 +191,7 @@ def forwarded_attachment_block_sets(attachment: Any) -> list[list[Mapping[str, A
                 value = [value]
             if not isinstance(value, (list, tuple)):
                 continue
-            blocks = [block for block in value if isinstance(block, Mapping)]
+            blocks = [block for block in value if isinstance(block, Mapping) and block.get("type")]
             if not blocks:
                 continue
             # Slack can include both ``message_blocks`` and a copied ``blocks``
@@ -222,25 +229,14 @@ def _file_identity(file_obj: Mapping[str, Any]) -> tuple[str, str] | None:
     return None
 
 
-def _file_completeness(file_obj: Mapping[str, Any]) -> int:
-    """Score records so a full file wins over a Slack Connect stub."""
-    return sum(
-        bool(file_obj.get(key))
-        for key in (
-            "id", "name", "title", "mimetype", "filetype", "size",
-            "url_private_download", "url_private", "permalink", "file_access",
-        )
-    )
-
-
 def merge_slack_files(
     event_files: Any, attachments: Any, bot_uid: str = ""
 ) -> list[dict[str, Any]]:
     """Merge direct and forwarded files, preserving order and removing duplicates.
 
-    A complete record replaces a short record with the same Slack file id or
-    URL. Files without a stable identity are retained rather than guessed to
-    be duplicates.
+    Records with the same identity contribute missing fields without replacing
+    a usable URL with richer display metadata. Files without a stable identity
+    are retained rather than guessed to be duplicates.
     """
     merged: list[dict[str, Any]] = []
     positions: dict[tuple[str, str], int] = {}
@@ -256,8 +252,16 @@ def merge_slack_files(
             positions[identity] = len(merged)
             merged.append(record)
             return
-        if _file_completeness(record) > _file_completeness(merged[existing_position]):
-            merged[existing_position] = record
+        existing = merged[existing_position]
+        for key, value in record.items():
+            if value and not existing.get(key):
+                existing[key] = value
+        # The hydrated record is already available; retaining the stub marker
+        # would unnecessarily require another files.info permission check.
+        if (existing.get("url_private_download") or existing.get("url_private")) and (
+            existing.get("file_access") == "check_file_info"
+        ):
+            del existing["file_access"]
 
     if isinstance(event_files, (list, tuple)):
         for file_obj in event_files:
