@@ -302,11 +302,11 @@ def _sdk_supports_agent_sessions() -> bool:
 
 
 def _session_status_method(client: Any):
-    """Return the status setter: Agent Sessions API when available, else legacy."""
-    if _sdk_supports_agent_sessions():
-        method = getattr(client, "agents_sessions_setStatus", None)
-        if method is not None:
-            return method
+    """Use the free-text status API, including its empty-string clear contract.
+
+    agents.sessions.setStatus accepts lifecycle enums, not these status phrases.
+    The assistant API remains supported through Slack's compatibility bridge.
+    """
     return client.assistant_threads_setStatus
 
 
