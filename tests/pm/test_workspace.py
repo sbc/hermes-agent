@@ -175,3 +175,29 @@ def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypa
         assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(environment.destination)
         assert kwargs["env"]["UV_PYTHON"] == str(environment.python)
     assert os.environ["PM_WORKSPACE_TEST_SENTINEL"] == "live"
+
+
+@pytest.mark.platforms("linux", "macos", "windows")
+@pytest.mark.parametrize("source_environments", [None, ["python_version >= '3.14'"]])
+def test_plugin_generation_resolves_for_the_host_platform(layout, source_environments):
+    """An Android-only optional wheel cannot break a desktop plugin install."""
+    tmp, core, plugin, _ = layout
+    manifest = core / "pyproject.toml"
+    manifest.write_text(manifest.read_text().replace(
+        "[project.optional-dependencies]\n",
+        "[project.optional-dependencies]\n"
+        "android=[\"missing-android-wheel==1; sys_platform == 'android'\"]\n",
+    ), encoding="utf-8")
+    if source_environments is not None:
+        manifest.write_text(manifest.read_text().replace(
+            "[tool.uv]\n", f"[tool.uv]\nenvironments={source_environments!r}\n",
+        ), encoding="utf-8")
+    original = manifest.read_bytes()
+    root, destination = tmp / "host-workspace", tmp / "host-env"
+    ws.lock_and_sync([plugin], ["chosen"], root=root, source=core, seed_lock=None,
+                     environment=managed_environment(destination))
+    python = destination / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    result = subprocess.run([str(python), "-c", "import base_dep, chosen_dep, member_dep"],
+                            capture_output=True, text=True, check=False, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert manifest.read_bytes() == original

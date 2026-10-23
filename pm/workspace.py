@@ -134,6 +134,15 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         uv_policy.pop("exclude-newer", None)
         uv_policy.pop("exclude-newer-package", None)
         uv_policy["workspace"] = {"members": sorted(members)}
+        # Plugin generations run on this host; core's release lock remains universal.
+        from hermes_platform.host.facts import os_family
+
+        platform_marker = f"sys_platform == '{os_family()}'"
+        environments = uv_policy.get("environments")
+        uv_policy["environments"] = (
+            [f"({marker}) and {platform_marker}" for marker in environments]
+            if environments is not None else [platform_marker]
+        )
         text = tomli_w.dumps(document)
     else:
         # A member-less generation syncs frozen against core's own lock.
